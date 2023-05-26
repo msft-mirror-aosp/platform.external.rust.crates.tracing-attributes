@@ -12,11 +12,11 @@
 //!
 //! ## Usage
 //!
-//! First, add this to your `Cargo.toml`:
+//! In the `Cargo.toml`:
 //!
 //! ```toml
 //! [dependencies]
-//! tracing-attributes = "0.1.23"
+//! tracing = "0.1"
 //! ```
 //!
 //! The [`#[instrument]`][instrument] attribute can now be added to a function
@@ -24,7 +24,7 @@
 //! called. For example:
 //!
 //! ```
-//! use tracing_attributes::instrument;
+//! use tracing::instrument;
 //!
 //! #[instrument]
 //! pub fn my_function(my_arg: usize) {
@@ -35,8 +35,8 @@
 //! ```
 //!
 //! [`tracing`]: https://crates.io/crates/tracing
+//! [instrument]: macro@instrument
 //! [span]: https://docs.rs/tracing/latest/tracing/span/index.html
-//! [instrument]: macro@self::instrument
 //!
 //! ## Supported Rust Versions
 //!
@@ -52,19 +52,17 @@
 //! supported compiler version is not considered a semver breaking change as
 //! long as doing so complies with this policy.
 //!
-#![doc(html_root_url = "https://docs.rs/tracing-attributes/0.1.23")]
 #![doc(
     html_logo_url = "https://raw.githubusercontent.com/tokio-rs/tracing/master/assets/logo-type.png",
+    html_favicon_url = "https://raw.githubusercontent.com/tokio-rs/tracing/master/assets/favicon.ico",
     issue_tracker_base_url = "https://github.com/tokio-rs/tracing/issues/"
 )]
-#![cfg_attr(docsrs, deny(rustdoc::broken_intra_doc_links))]
 #![warn(
     missing_debug_implementations,
     missing_docs,
     rust_2018_idioms,
     unreachable_pub,
     bad_style,
-    const_err,
     dead_code,
     improper_ctypes,
     non_shorthand_field_patterns,
@@ -79,12 +77,9 @@
     unused_parens,
     while_true
 )]
-// TODO: once `tracing` bumps its MSRV to 1.42, remove this allow.
-#![allow(unused)]
-extern crate proc_macro;
 
 use proc_macro2::TokenStream;
-use quote::ToTokens;
+use quote::{quote, ToTokens};
 use syn::parse::{Parse, ParseStream};
 use syn::{Attribute, ItemFn, Signature, Visibility};
 
@@ -93,7 +88,7 @@ mod expand;
 /// Instruments a function to create and enter a `tracing` [span] every time
 /// the function is called.
 ///
-/// Unless overriden, a span with the [`INFO`] [level] will be generated.
+/// Unless overriden, a span with `info` level will be generated.
 /// The generated span's name will be the name of the function.
 /// By default, all arguments to the function are included as fields on the
 /// span. Arguments that are `tracing` [primitive types] implementing the
@@ -101,216 +96,27 @@ mod expand;
 /// not implement `Value` will be recorded using [`std::fmt::Debug`].
 ///
 /// [primitive types]: https://docs.rs/tracing/latest/tracing/field/trait.Value.html#foreign-impls
-/// [`Value` trait]: https://docs.rs/tracing/latest/tracing/field/trait.Value.html.
+/// [`Value` trait]: https://docs.rs/tracing/latest/tracing/field/trait.Value.html
 ///
-/// # Overriding Span Attributes
-///
-/// To change the [name] of the generated span, add a `name` argument to the
-/// `#[instrument]` macro, followed by an equals sign and a string literal. For
-/// example:
-///
-/// ```
-/// # use tracing_attributes::instrument;
-///
-/// // The generated span's name will be "my_span" rather than "my_function".
-/// #[instrument(name = "my_span")]
-/// pub fn my_function() {
-///     // ... do something incredibly interesting and important ...
-/// }
-/// ```
-///
-/// To override the [target] of the generated span, add a `target` argument to
-/// the `#[instrument]` macro, followed by an equals sign and a string literal
-/// for the new target. The [module path] is still recorded separately. For
-/// example:
-///
-/// ```
-/// pub mod my_module {
-///     # use tracing_attributes::instrument;
-///     // The generated span's target will be "my_crate::some_special_target",
-///     // rather than "my_crate::my_module".
-///     #[instrument(target = "my_crate::some_special_target")]
-///     pub fn my_function() {
-///         // ... all kinds of neat code in here ...
-///     }
-/// }
-/// ```
-///
-/// Finally, to override the [level] of the generated span, add a `level`
-/// argument, followed by an equals sign and a string literal with the name of
-/// the desired level. Level names are not case sensitive. For example:
-///
-/// ```
-/// # use tracing_attributes::instrument;
-/// // The span's level will be TRACE rather than INFO.
-/// #[instrument(level = "trace")]
-/// pub fn my_function() {
-///     // ... I have written a truly marvelous implementation of this function,
-///     // which this example is too narrow to contain ...
-/// }
-/// ```
-///
-/// # Skipping Fields
-///
-/// To skip recording one or more arguments to a function or method, pass
-/// the argument's name inside the `skip()` argument on the `#[instrument]`
-/// macro. This can be used when an argument to an instrumented function does
-/// not implement [`fmt::Debug`], or to exclude an argument with a verbose or
-/// costly `Debug` implementation. Note that:
-///
+/// To skip recording a function's or method's argument, pass the argument's name
+/// to the `skip` argument on the `#[instrument]` macro. For example,
+/// `skip` can be used when an argument to an instrumented function does
+/// not implement [`fmt::Debug`], or to exclude an argument with a verbose
+/// or costly Debug implementation. Note that:
 /// - multiple argument names can be passed to `skip`.
 /// - arguments passed to `skip` do _not_ need to implement `fmt::Debug`.
 ///
-/// You can also use `skip_all` to skip all arguments.
-///
-/// ## Examples
-///
-/// ```
-/// # use tracing_attributes::instrument;
-/// # use std::collections::HashMap;
-/// // This type doesn't implement `fmt::Debug`!
-/// struct NonDebug;
-///
-/// // `arg` will be recorded, while `non_debug` will not.
-/// #[instrument(skip(non_debug))]
-/// fn my_function(arg: usize, non_debug: NonDebug) {
-///     // ...
-/// }
-///
-/// // These arguments are huge
-/// #[instrument(skip_all)]
-/// fn my_big_data_function(large: Vec<u8>, also_large: HashMap<String, String>) {
-///     // ...
-/// }
-/// ```
-///
-/// Skipping the `self` parameter:
-///
-/// ```
-/// # use tracing_attributes::instrument;
-/// #[derive(Debug)]
-/// struct MyType {
-///    data: Vec<u8>, // Suppose this buffer is often quite long...
-/// }
-///
-/// impl MyType {
-///     // Suppose we don't want to print an entire kilobyte of `data`
-///     // every time this is called...
-///     #[instrument(skip(self))]
-///     pub fn my_method(&mut self, an_interesting_argument: usize) {
-///          // ... do something (hopefully, using all that `data`!)
-///     }
-/// }
-/// ```
-///
-/// # Adding Fields
-///
-/// Additional fields (key-value pairs with arbitrary data) may be added to the
-/// generated span using the `fields` argument on the `#[instrument]` macro. Any
-/// Rust expression can be used as a field value in this manner. These
-/// expressions will be evaluated at the beginning of the function's body, so
-/// arguments to the function may be used in these expressions. Field names may
-/// also be specified *without* values. Doing so will result in an [empty field]
-/// whose value may be recorded later within the function body.
-///
-/// This supports the same [field syntax] as the `span!` and `event!` macros.
+/// Additional fields (key-value pairs with arbitrary data) can be passed to
+/// to the generated span through the `fields` argument on the
+/// `#[instrument]` macro. Strings, integers or boolean literals are accepted values
+/// for each field. The name of the field must be a single valid Rust
+/// identifier, nested (dotted) field names are not supported.
 ///
 /// Note that overlap between the names of fields and (non-skipped) arguments
 /// will result in a compile error.
 ///
-/// ## Examples
-///
-/// Adding a new field based on the value of an argument:
-///
-/// ```
-/// # use tracing_attributes::instrument;
-///
-/// // This will record a field named "i" with the value of `i` *and* a field
-/// // named "next" with the value of `i` + 1.
-/// #[instrument(fields(next = i + 1))]
-/// pub fn my_function(i: usize) {
-///     // ...
-/// }
-/// ```
-///
-/// Recording specific properties of a struct as their own fields:
-///
-/// ```
-/// # mod http {
-/// #   pub struct Error;
-/// #   pub struct Response<B> { pub(super) _b: std::marker::PhantomData<B> }
-/// #   pub struct Request<B> { _b: B }
-/// #   impl<B> std::fmt::Debug for Request<B> {
-/// #       fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-/// #           f.pad("request")
-/// #       }
-/// #   }
-/// #   impl<B> Request<B> {
-/// #       pub fn uri(&self) -> &str { "fake" }
-/// #       pub fn method(&self) -> &str { "GET" }
-/// #   }
-/// # }
-/// # use tracing_attributes::instrument;
-///
-/// // This will record the request's URI and HTTP method as their own separate
-/// // fields.
-/// #[instrument(fields(http.uri = req.uri(), http.method = req.method()))]
-/// pub fn handle_request<B>(req: http::Request<B>) -> http::Response<B> {
-///     // ... handle the request ...
-///     # http::Response { _b: std::marker::PhantomData }
-/// }
-/// ```
-///
-/// This can be used in conjunction with `skip` or `skip_all` to record only
-/// some fields of a struct:
-/// ```
-/// # use tracing_attributes::instrument;
-/// // Remember the struct with the very large `data` field from the earlier
-/// // example? Now it also has a `name`, which we might want to include in
-/// // our span.
-/// #[derive(Debug)]
-/// struct MyType {
-///    name: &'static str,
-///    data: Vec<u8>,
-/// }
-///
-/// impl MyType {
-///     // This will skip the `data` field, but will include `self.name`,
-///     // formatted using `fmt::Display`.
-///     #[instrument(skip(self), fields(self.name = %self.name))]
-///     pub fn my_method(&mut self, an_interesting_argument: usize) {
-///          // ... do something (hopefully, using all that `data`!)
-///     }
-/// }
-/// ```
-///
-/// Adding an empty field to be recorded later:
-///
-/// ```
-/// # use tracing_attributes::instrument;
-///
-/// // This function does a very interesting and important mathematical calculation.
-/// // Suppose we want to record both the inputs to the calculation *and* its result...
-/// #[instrument(fields(result))]
-/// pub fn do_calculation(input_1: usize, input_2: usize) -> usize {
-///     // Rerform the calculation.
-///     let result = input_1 + input_2;
-///
-///     // Record the result as part of the current span.
-///     tracing::Span::current().record("result", &result);
-///
-///     // Now, the result will also be included on this event!
-///     tracing::info!("calculation complete!");
-///
-///     // ... etc ...
-///     # 0
-/// }
-/// ```
-///
 /// # Examples
-///
 /// Instrumenting a function:
-///
 /// ```
 /// # use tracing_attributes::instrument;
 /// #[instrument]
@@ -324,11 +130,15 @@ mod expand;
 /// Setting the level for the generated span:
 /// ```
 /// # use tracing_attributes::instrument;
-/// #[instrument(level = "debug")]
+/// # use tracing::Level;
+/// #[instrument(level = Level::DEBUG)]
 /// pub fn my_function() {
 ///     // ...
 /// }
 /// ```
+/// Levels can be specified either with [`Level`] constants, literal strings
+/// (e.g., `"debug"`, `"info"`) or numerically (1—5, corresponding to [`Level::TRACE`]—[`Level::ERROR`]).
+///
 /// Overriding the generated span's name:
 /// ```
 /// # use tracing_attributes::instrument;
@@ -399,7 +209,7 @@ mod expand;
 /// }
 /// ```
 ///
-/// To add an additional context to the span, pass key-value pairs to `fields`:
+/// To add additional context to the span, pass key-value pairs to `fields`:
 ///
 /// ```
 /// # use tracing_attributes::instrument;
@@ -419,9 +229,20 @@ mod expand;
 ///     42
 /// }
 /// ```
-/// The return value event will have the same level as the span generated by `#[instrument]`.
-/// By default, this will be [`INFO`], but if the level is overridden, the event will be at the same
+/// The level of the return value event defaults to the same level as the span generated by `#[instrument]`.
+/// By default, this will be `TRACE`, but if the span level is overridden, the event will be at the same
 /// level.
+///
+/// It's also possible to override the level for the `ret` event independently:
+///
+/// ```
+/// # use tracing_attributes::instrument;
+/// # use tracing::Level;
+/// #[instrument(ret(level = Level::WARN))]
+/// fn my_function() -> i32 {
+///     42
+/// }
+/// ```
 ///
 /// **Note**:  if the function returns a `Result<T, E>`, `ret` will record returned values if and
 /// only if the function returns [`Result::Ok`].
@@ -438,8 +259,8 @@ mod expand;
 /// }
 /// ```
 ///
-/// If the function returns a `Result<T, E>` and `E` implements `std::fmt::Display`, you can add
-/// `err` or `err(Display)` to emit error events when the function returns `Err`:
+/// If the function returns a `Result<T, E>` and `E` implements `std::fmt::Display`, adding
+/// `err` or `err(Display)` will emit error events when the function returns `Err`:
 ///
 /// ```
 /// # use tracing_attributes::instrument;
@@ -449,9 +270,22 @@ mod expand;
 /// }
 /// ```
 ///
+/// The level of the error value event defaults to `ERROR`.
+///
+/// Similarly, overriding the level of the `err` event :
+///
+/// ```
+/// # use tracing_attributes::instrument;
+/// # use tracing::Level;
+/// #[instrument(err(level = Level::INFO))]
+/// fn my_function(arg: usize) -> Result<(), std::io::Error> {
+///     Ok(())
+/// }
+/// ```
+///
 /// By default, error values will be recorded using their `std::fmt::Display` implementations.
 /// If an error implements `std::fmt::Debug`, it can be recorded using its `Debug` implementation
-/// instead, by writing `err(Debug)`:
+/// instead by writing `err(Debug)`:
 ///
 /// ```
 /// # use tracing_attributes::instrument;
@@ -510,44 +344,21 @@ mod expand;
 /// }
 /// ```
 ///
-/// Note than on `async-trait` <= 0.1.43, references to the `Self`
-/// type inside the `fields` argument were only allowed when the instrumented
-/// function is a method (i.e., the function receives `self` as an argument).
-/// For example, this *used to not work* because the instrument function
-/// didn't receive `self`:
+/// `const fn` cannot be instrumented, and will result in a compilation failure:
+///
+/// ```compile_fail
+/// # use tracing_attributes::instrument;
+/// #[instrument]
+/// const fn my_const_function() {}
 /// ```
-/// # use tracing::instrument;
-/// use async_trait::async_trait;
-///
-/// #[async_trait]
-/// pub trait Bar {
-///     async fn bar();
-/// }
-///
-/// #[derive(Debug)]
-/// struct BarImpl(usize);
-///
-/// #[async_trait]
-/// impl Bar for BarImpl {
-///     #[instrument(fields(tmp = std::any::type_name::<Self>()))]
-///     async fn bar() {}
-/// }
-/// ```
-/// Instead, you should manually rewrite any `Self` types as the type for
-/// which you implement the trait: `#[instrument(fields(tmp = std::any::type_name::<Bar>()))]`
-/// (or maybe you can just bump `async-trait`).
 ///
 /// [span]: https://docs.rs/tracing/latest/tracing/span/index.html
-/// [name]: https://docs.rs/tracing/latest/tracing/struct.Metadata.html#method.name
-/// [target]: https://docs.rs/tracing/latest/tracing/struct.Metadata.html#method.target
-/// [level]: https://docs.rs/tracing/latest/tracing/struct.Level.html
-/// [module path]: https://docs.rs/tracing/latest/tracing/struct.Metadata.html#method.module_path
-/// [`INFO`]: https://docs.rs/tracing/latest/tracing/struct.Level.html#associatedconstant.INFO
-/// [empty field]: https://docs.rs/tracing/latest/tracing/field/struct.Empty.html
-/// [field syntax]: https://docs.rs/tracing/latest/tracing/#recording-fields
 /// [`follows_from`]: https://docs.rs/tracing/latest/tracing/struct.Span.html#method.follows_from
 /// [`tracing`]: https://github.com/tokio-rs/tracing
 /// [`fmt::Debug`]: std::fmt::Debug
+/// [`Level`]: https://docs.rs/tracing/latest/tracing/struct.Level.html
+/// [`Level::TRACE`]: https://docs.rs/tracing/latest/tracing/struct.Level.html#associatedconstant.TRACE
+/// [`Level::ERROR`]: https://docs.rs/tracing/latest/tracing/struct.Level.html#associatedconstant.ERROR
 #[proc_macro_attribute]
 pub fn instrument(
     args: proc_macro::TokenStream,
@@ -583,6 +394,13 @@ fn instrument_precise(
 ) -> Result<proc_macro::TokenStream, syn::Error> {
     let input = syn::parse::<ItemFn>(item)?;
     let instrumented_function_name = input.sig.ident.to_string();
+
+    if input.sig.constness.is_some() {
+        return Ok(quote! {
+            compile_error!("the `#[instrument]` attribute may not be used with `const fn`s")
+        }
+        .into());
+    }
 
     // check for async_trait-like patterns in the block, and instrument
     // the future instead of the wrapper
